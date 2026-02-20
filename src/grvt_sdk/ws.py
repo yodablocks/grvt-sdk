@@ -97,6 +97,9 @@ def _deserialize(msg: dict, msg_type: Optional[Type]) -> Any:
 
     data = msg.get("data", msg)
     try:
+        if hasattr(msg_type, "model_validate"):
+            # Pydantic v2 BaseModel
+            return msg_type.model_validate(data)
         if hasattr(msg_type, "__dataclass_fields__"):
             # Dataclass: pass matching kwargs
             fields  = msg_type.__dataclass_fields__

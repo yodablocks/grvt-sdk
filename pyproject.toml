@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "grvt-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python SDK for GRVT Exchange – REST, WebSocket, EIP-712 signing, and low-latency order pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,33 +13,35 @@ authors = [{ name = "yodablocks" }]
 keywords = ["grvt", "crypto", "trading", "sdk", "eip712", "websocket"]
 classifiers = [
     "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
-            "Operating System :: OS Independent",
-                "Topic :: Office/Business :: Financial",
-                ]
-                dependencies = [
-                    "aiohttp>=3.9",
-                        "eth-account>=0.11",
-                            "requests>=2.31",
-                                "pydantic>=2.5",
-                                    "websockets>=12.0",
-                                    ]
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "eth-account>=0.11",
+    "requests>=2.31",
+    "websockets>=12.0",
+]
 
-                                    [project.optional-dependencies]
-                                    dev = [
-                                        "pytest>=7.4",
-                                            "pytest-asyncio>=0.23",
-                                                "black",
-                                                    "ruff",
-                                                        "mypy",
-                                                        ]
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "black",
+    "ruff",
+    "mypy",
+]
 
-                                                        [tool.setuptools.packages.find]
-                                                        where = ["src"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
-                                                        [tool.ruff]
-                                                        line-length = 100
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
-                                                        [tool.mypy]
-                                                        strict = true
-                                                        
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+strict = true

@@ -1,34 +1,33 @@
 """
-rest.py – Synchronous REST client for GRVT Exchange.
+rest.py – REST clients (sync and async) for GRVT Exchange.
 
-Wraps GRVT's JSON REST endpoints under a clean Python API.
-All methods raise :class:`GRVTAPIError` on non-2xx responses.
+Both clients raise GRVTAPIError on non-2xx responses.
 
-Private (order management) endpoints require authentication via
-:class:`~grvt_sdk.auth.GRVTAuth`.  Market-data endpoints are public.
+Private (order management) endpoints require authentication via GRVTAuth.
+Market-data endpoints are public.
 
-Usage
------
-    from grvt_sdk import GRVTRestClient, GRVTAuth
+Usage – sync
+------------
+    from grvt_sdk import GRVTRestClient, GRVTAuth, GRVTEnv
 
-        auth   = GRVTAuth(api_key="...", env="testnet")
-            client = GRVTRestClient(auth=auth)
+    auth   = GRVTAuth(api_key="...", env=GRVTEnv.TESTNET)
+    client = GRVTRestClient(auth=auth)
 
-                # Sign and submit an order
-                    sign_order(order, private_key, chain_id, verifying_contract)
-                        response = client.create_order(order)
+    sign_order(order, private_key, GRVTEnv.TESTNET.chain_id, contract)
+    response = client.create_order(order)
 
-                            # Query open orders
-                                open_orders = client.get_open_orders(sub_account_id=12345)
-
-                                    # Market data (no auth needed)
-                                        book = client.get_orderbook("BTC_USDT_Perp")
-                                        """
+Usage – async
+-------------
+    async with AsyncGRVTRestClient(auth=auth) as client:
+        book = await client.get_orderbook("BTC_USDT_Perp")
+        resp = await client.create_order(order)
+"""
 
 from __future__ import annotations
 
-import dataclasses
+import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 import requests
@@ -36,13 +35,10 @@ import requests
 from .auth import GRVTAuth
 from .types import (
     AccountSummary,
-    CancelOrderRequest,
+    CancelAllOrdersResponse,
     CancelOrderResponse,
-    CreateOrderRequest,
     CreateOrderResponse,
     KindEnum,
-    OpenOrdersRequest,
-    OpenOrdersResponse,
     Order,
     OrderLeg,
     OrderMetadata,
@@ -57,141 +53,192 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Retry configuration
+# ---------------------------------------------------------------------------
+
+_RETRY_STATUSES  = {429, 500, 502, 503, 504}
+_MAX_RETRIES     = 3
+_RETRY_BASE_S    = 0.5   # initial back-off seconds
+_RETRY_EXP       = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
 
 class GRVTAPIError(Exception):
-      """Raised when GRVT's REST API returns an error response."""
+    """Raised when GRVT's REST API returns an error response."""
 
-    def __init__(self, status_code: int, body: str) -> None:
-              self.status_code = status_code
-              self.body = body
-              super().__init__(f"GRVT API error [{status_code}]: {body}")
+    def __init__(self, status_code: int, body: str, method: str = "", path: str = "") -> None:
+        self.status_code = status_code
+        self.body        = body
+        self.method      = method.upper()
+        self.path        = path
+        location = f" {self.method} {self.path}" if path else ""
+        super().__init__(f"GRVT API error [{status_code}]{location}: {body}")
 
 
 # ---------------------------------------------------------------------------
-# Serialisation helpers
+# Serialisation helpers (shared by sync and async clients)
 # ---------------------------------------------------------------------------
 
 def _order_to_dict(order: Order) -> dict:
-      """Serialise an :class:`Order` to the JSON body expected by GRVT."""
-      return {
-          "sub_account_id": str(order.sub_account_id),
-          "time_in_force":  int(order.time_in_force),
-          "expiration":     str(order.expiration),
-          "legs": [
-              {
-                  "instrument":     leg.instrument_hash,
-                  "size":           leg.size,
-                  "limit_price":    leg.limit_price,
-                  "is_buying_asset": leg.is_buying_asset,
-              }
-              for leg in order.legs
-          ],
-          "metadata": {
-              "client_order_id": order.metadata.client_order_id,
-              "create_time":     str(order.metadata.create_time),
-          },
-          "signature": order.signature or "",
-      }
+    """Serialise an Order to the JSON body expected by GRVT."""
+    return {
+        "sub_account_id": str(order.sub_account_id),
+        "time_in_force":  int(order.time_in_force),
+        "expiration":     str(order.expiration),
+        "legs": [
+            {
+                "instrument":      leg.instrument_hash,
+                "size":            leg.size,
+                "limit_price":     leg.limit_price,
+                "is_buying_asset": leg.is_buying_asset,
+            }
+            for leg in order.legs
+        ],
+        "metadata": {
+            "client_order_id": order.metadata.client_order_id,
+            "create_time":     str(order.metadata.create_time),
+        },
+        "signature": order.signature or "",
+    }
 
 
 def _parse_order(raw: dict) -> Order:
-      """Deserialise a raw API dict into an :class:`Order`."""
-      legs = [
-          OrderLeg(
-              instrument_hash=leg["instrument"],
-              size=leg["size"],
-              limit_price=leg["limit_price"],
-              is_buying_asset=leg["is_buying_asset"],
-          )
-          for leg in raw.get("legs", [])
-      ]
-      meta_raw = raw.get("metadata", {})
-      metadata = OrderMetadata(
-          client_order_id=int(meta_raw.get("client_order_id", 0)),
-          create_time=int(meta_raw.get("create_time", 0)),
-      )
-      return Order(
-          sub_account_id=int(raw["sub_account_id"]),
-          time_in_force=TimeInForce(int(raw["time_in_force"])),
-          expiration=int(raw["expiration"]),
-          legs=legs,
-          metadata=metadata,
-          signature=raw.get("signature"),
-          order_id=raw.get("order_id"),
-      )
+    """Deserialise a raw API dict into an Order."""
+    legs = [
+        OrderLeg(
+            instrument_hash=leg["instrument"],
+            size=leg["size"],
+            limit_price=leg["limit_price"],
+            is_buying_asset=leg["is_buying_asset"],
+        )
+        for leg in raw.get("legs", [])
+    ]
+    meta_raw = raw.get("metadata", {})
+    metadata = OrderMetadata(
+        client_order_id=int(meta_raw.get("client_order_id", 0)),
+        create_time=int(meta_raw.get("create_time", 0)),
+    )
+    return Order(
+        sub_account_id=int(raw["sub_account_id"]),
+        time_in_force=TimeInForce(int(raw["time_in_force"])),
+        expiration=int(raw["expiration"]),
+        legs=legs,
+        metadata=metadata,
+        signature=raw.get("signature"),
+        order_id=raw.get("order_id"),
+    )
+
+
+def _parse_orderbook(instrument: str, result: dict) -> Orderbook:
+    def _levels(raw_levels: list) -> list[OrderbookLevel]:
+        return [
+            OrderbookLevel(
+                price=lv["price"],
+                size=lv["size"],
+                num_orders=int(lv.get("num_orders", 0)),
+            )
+            for lv in raw_levels
+        ]
+    return Orderbook(
+        instrument=instrument,
+        bids=_levels(result.get("bids", [])),
+        asks=_levels(result.get("asks", [])),
+        sequence_number=int(result.get("sequence_number", 0)),
+    )
+
+
+def _parse_account_summary(sub_account_id: int, result: dict) -> AccountSummary:
+    positions = [
+        Position(
+            instrument=p["instrument"],
+            size=p["size"],
+            avg_entry_price=p["avg_entry_price"],
+            unrealised_pnl=p.get("unrealised_pnl", "0"),
+            realised_pnl=p.get("realised_pnl", "0"),
+            margin=p.get("margin", "0"),
+        )
+        for p in result.get("positions", [])
+    ]
+    return AccountSummary(
+        sub_account_id=sub_account_id,
+        total_equity=result.get("total_equity", "0"),
+        available_margin=result.get("available_margin", "0"),
+        initial_margin=result.get("initial_margin", "0"),
+        maintenance_margin=result.get("maintenance_margin", "0"),
+        positions=positions,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Client
+# Synchronous client
 # ---------------------------------------------------------------------------
 
 class GRVTRestClient:
-      """
-          Synchronous REST client for GRVT Exchange.
+    """
+    Synchronous REST client for GRVT Exchange.
 
-              Parameters
-                  ----------
-                      auth    : :class:`GRVTAuth` instance (handles login + cookie refresh)
-                          timeout : Default HTTP timeout in seconds
-                              """
+    Parameters
+    ----------
+    auth    : GRVTAuth instance (handles login + cookie refresh)
+    timeout : Default HTTP timeout in seconds
+    """
 
     def __init__(self, auth: GRVTAuth, timeout: float = 10.0) -> None:
-              self._auth = auth
-              self._timeout = timeout
+        self._auth    = auth
+        self._timeout = timeout
 
     # ------------------------------------------------------------------
     # Internal request helper
     # ------------------------------------------------------------------
 
     def _request(
-              self,
-              method: str,
-              path: str,
-              *,
-              json: Optional[dict] = None,
-              public: bool = False,
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[dict] = None,
+        public: bool = False,
     ) -> Any:
-              """
-                      Send a request to the GRVT REST API.
+        """
+        Send a request with automatic retry on retryable status codes.
 
-                              Parameters
-                                      ----------
-                                              method  : HTTP method ("GET", "POST", etc.)
-                                                      path    : Path relative to the base URL
-                                                              json    : Request body (for POST/PUT)
-                                                                      public  : If True, use the market-data base URL without auth cookie
+        Parameters
+        ----------
+        method  : HTTP method ("GET", "POST", etc.)
+        path    : Path relative to the base URL
+        json    : Request body (for POST/PUT)
+        public  : If True, use the market-data base URL without auth cookie
+        """
+        if public:
+            base    = self._auth.market_url
+            session = requests.Session()
+        else:
+            base    = self._auth.base_url
+            session = self._auth.get_session()
 
-                                                                              Returns
-                                                                                      -------
-                                                                                              Parsed JSON response body (dict or list)
+        url     = base + path
+        backoff = _RETRY_BASE_S
 
-                                                                                                      Raises
-                                                                                                              ------
-                                                                                                                      GRVTAPIError on non-2xx HTTP status
-                                                                                                                              """
-              if public:
-                            base = self._auth.market_url
-                            session = requests.Session()
-else:
-            base = self._auth.base_url
-              session = self._auth.get_session()
+        for attempt in range(_MAX_RETRIES + 1):
+            logger.debug("%s %s  body=%s  attempt=%d", method.upper(), url, json, attempt)
+            resp = session.request(method, url, json=json, timeout=self._timeout)
 
-        url = base + path
-        logger.debug("%s %s  body=%s", method.upper(), url, json)
+            if resp.status_code not in _RETRY_STATUSES or attempt == _MAX_RETRIES:
+                break
 
-        resp = session.request(
-                      method,
-                      url,
-                      json=json,
-                      timeout=self._timeout,
-        )
+            logger.warning(
+                "Retryable response %d from %s %s – retrying in %.1f s",
+                resp.status_code, method.upper(), path, backoff,
+            )
+            time.sleep(backoff)
+            backoff *= _RETRY_EXP
 
         if resp.status_code >= 400:
-                      raise GRVTAPIError(resp.status_code, resp.text)
+            raise GRVTAPIError(resp.status_code, resp.text, method=method, path=path)
 
         return resp.json()
 
@@ -200,203 +247,299 @@ else:
     # ------------------------------------------------------------------
 
     def create_order(self, order: Order) -> CreateOrderResponse:
-              """
-                      Submit a signed order to the exchange.
+        """Submit a signed order. order.signature must already be set."""
+        if not order.signature:
+            raise ValueError("order.signature must be set before submitting")
 
-                              The order must already have ``order.signature`` populated by
-                                      :func:`~grvt_sdk.signing.sign_order`.
-
-                                              Returns
-                                                      -------
-                                                              :class:`CreateOrderResponse` with ``order_id`` and ``status``
-                                                                      """
-              if not order.signature:
-                            raise ValueError("order.signature must be set before submitting")
-
-              body = _order_to_dict(order)
-              raw = self._request("POST", "/full/v1/order", json=body)
-
+        raw    = self._request("POST", "/full/v1/order", json=_order_to_dict(order))
         result = raw.get("result", raw)
         return CreateOrderResponse(
-                      order_id=result["order_id"],
-                      status=OrderStatus(int(result.get("status", 2))),
-                      reason=result.get("reason"),
+            order_id=result["order_id"],
+            status=OrderStatus(int(result.get("status", 2))),
+            reason=result.get("reason"),
         )
 
-    def cancel_order(
-              self, sub_account_id: int, order_id: str
-    ) -> CancelOrderResponse:
-              """Cancel an open order by ID."""
-              body = {
-                  "sub_account_id": str(sub_account_id),
-                  "order_id": order_id,
-              }
-              raw = self._request("POST", "/full/v1/cancel_order", json=body)
-              result = raw.get("result", raw)
-              return CancelOrderResponse(
-                  order_id=result.get("order_id", order_id),
-                  success=result.get("success", True),
-              )
+    def cancel_order(self, sub_account_id: int, order_id: str) -> CancelOrderResponse:
+        """Cancel an open order by ID."""
+        body   = {"sub_account_id": str(sub_account_id), "order_id": order_id}
+        raw    = self._request("POST", "/full/v1/cancel_order", json=body)
+        result = raw.get("result", raw)
+        return CancelOrderResponse(
+            order_id=result.get("order_id", order_id),
+            success=result.get("success", True),
+        )
 
     def cancel_all_orders(
-              self,
-              sub_account_id: int,
-              kind: Optional[KindEnum] = None,
-              base: Optional[str] = None,
-              quote: Optional[str] = None,
-    ) -> int:
-              """
-                      Cancel all open orders for a sub-account (optionally filtered).
+        self,
+        sub_account_id: int,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
+    ) -> CancelAllOrdersResponse:
+        """Cancel all open orders for a sub-account (optionally filtered)."""
+        body: dict = {"sub_account_id": str(sub_account_id)}
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
 
-                              Returns the number of cancelled orders.
-                                      """
-              body: dict = {"sub_account_id": str(sub_account_id)}
-              if kind is not None:
-                            body["kind"] = [int(kind)]
-                        if base is not None:
-                                      body["base"] = [base]
-                                  if quote is not None:
-                                                body["quote"] = [quote]
-
-        raw = self._request("POST", "/full/v1/cancel_all_orders", json=body)
+        raw    = self._request("POST", "/full/v1/cancel_all_orders", json=body)
         result = raw.get("result", raw)
-        return int(result.get("num_cancelled", 0))
+        return CancelAllOrdersResponse(num_cancelled=int(result.get("num_cancelled", 0)))
 
     def get_open_orders(
-              self,
-              sub_account_id: int,
-              kind: Optional[KindEnum] = None,
-              base: Optional[str] = None,
-              quote: Optional[str] = None,
+        self,
+        sub_account_id: int,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
     ) -> list[Order]:
-              """Return all open orders for a sub-account."""
+        """Return all open orders for a sub-account."""
         body: dict = {"sub_account_id": str(sub_account_id)}
-        if kind is not None:
-                      body["kind"] = [int(kind)]
-                  if base is not None:
-                                body["base"] = [base]
-                            if quote is not None:
-                                          body["quote"] = [quote]
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
 
-        raw = self._request("POST", "/full/v1/open_orders", json=body)
+        raw        = self._request("POST", "/full/v1/open_orders", json=body)
         orders_raw = raw.get("result", {}).get("open_orders", [])
         return [_parse_order(o) for o in orders_raw]
 
     def get_order(self, sub_account_id: int, order_id: str) -> Order:
-              """Fetch a single order by ID."""
-        body = {
-                      "sub_account_id": str(sub_account_id),
-                      "order_id": order_id,
-        }
-        raw = self._request("POST", "/full/v1/order_history", json=body)
+        """Fetch a single order by ID."""
+        body       = {"sub_account_id": str(sub_account_id), "order_id": order_id}
+        raw        = self._request("POST", "/full/v1/order_history", json=body)
         orders_raw = raw.get("result", {}).get("orders", [])
         if not orders_raw:
-                      raise GRVTAPIError(404, f"Order {order_id!r} not found")
-                  return _parse_order(orders_raw[0])
+            raise GRVTAPIError(404, f"Order {order_id!r} not found", method="POST", path="/full/v1/order_history")
+        return _parse_order(orders_raw[0])
 
     # ------------------------------------------------------------------
     # Account / position endpoints (private)
     # ------------------------------------------------------------------
 
     def get_account_summary(self, sub_account_id: int) -> AccountSummary:
-              """Fetch account summary including positions and margin."""
-        body = {"sub_account_id": str(sub_account_id)}
-        raw = self._request("POST", "/full/v1/account_summary", json=body)
+        """Fetch account summary including positions and margin."""
+        body   = {"sub_account_id": str(sub_account_id)}
+        raw    = self._request("POST", "/full/v1/account_summary", json=body)
         result = raw.get("result", raw)
-
-        positions = [
-                      Position(
-                                        instrument=p["instrument"],
-                                        size=p["size"],
-                                        avg_entry_price=p["avg_entry_price"],
-                                        unrealised_pnl=p.get("unrealised_pnl", "0"),
-                                        realised_pnl=p.get("realised_pnl", "0"),
-                                        margin=p.get("margin", "0"),
-                      )
-                      for p in result.get("positions", [])
-        ]
-
-        return AccountSummary(
-                      sub_account_id=sub_account_id,
-                      total_equity=result.get("total_equity", "0"),
-                      available_margin=result.get("available_margin", "0"),
-                      initial_margin=result.get("initial_margin", "0"),
-                      maintenance_margin=result.get("maintenance_margin", "0"),
-                      positions=positions,
-        )
+        return _parse_account_summary(sub_account_id, result)
 
     # ------------------------------------------------------------------
-    # Market data endpoints (public – no auth required)
+    # Market data endpoints (public)
     # ------------------------------------------------------------------
 
     def get_orderbook(self, instrument: str, depth: int = 10) -> Orderbook:
-              """
-                      Fetch the current L2 order book for an instrument.
+        """Fetch the current L2 order book for an instrument."""
+        raw    = self._request("POST", "/full/v1/book", json={"instrument": instrument, "depth": depth}, public=True)
+        return _parse_orderbook(instrument, raw.get("result", raw))
 
-                              Parameters
-                                      ----------
-                                              instrument  : e.g. "BTC_USDT_Perp"
-        depth       : Number of bid/ask levels to return
-                """
-        body = {"instrument": instrument, "depth": depth}
-        raw = self._request("POST", "/full/v1/book", json=body, public=True)
-        result = raw.get("result", raw)
-
-        def parse_levels(raw_levels: list) -> list[OrderbookLevel]:
-                      return [
-                                        OrderbookLevel(
-                                                              price=lv["price"],
-                                                              size=lv["size"],
-                                                              num_orders=int(lv.get("num_orders", 0)),
-                                        )
-                                        for lv in raw_levels
-                      ]
-
-        return Orderbook(
-                      instrument=instrument,
-                      bids=parse_levels(result.get("bids", [])),
-                      asks=parse_levels(result.get("asks", [])),
-                      sequence_number=int(result.get("sequence_number", 0)),
-        )
-
-    def get_recent_trades(
-              self, instrument: str, limit: int = 100
-    ) -> list[Trade]:
-              """Fetch the most recent public trades for an instrument."""
-        body = {"instrument": instrument, "limit": limit}
-        raw = self._request("POST", "/full/v1/trades", json=body, public=True)
+    def get_recent_trades(self, instrument: str, limit: int = 100) -> list[Trade]:
+        """Fetch the most recent public trades for an instrument."""
+        raw        = self._request("POST", "/full/v1/trades", json={"instrument": instrument, "limit": limit}, public=True)
         trades_raw = raw.get("result", {}).get("trades", [])
         return [
-                      Trade(
-                                        trade_id=t["trade_id"],
-                                        instrument=instrument,
-                                        price=t["price"],
-                                        size=t["size"],
-                                        side=Side(int(t["is_taker_buyer"])),
-                                        timestamp=int(t["created_time"]),
-                      )
-                      for t in trades_raw
+            Trade(
+                trade_id=t["trade_id"],
+                instrument=instrument,
+                price=t["price"],
+                size=t["size"],
+                side=Side(int(t["is_taker_buyer"])),
+                timestamp=int(t["created_time"]),
+            )
+            for t in trades_raw
         ]
 
     def get_instruments(
-              self,
-              kind: Optional[KindEnum] = None,
-              base: Optional[str] = None,
-              quote: Optional[str] = None,
+        self,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
     ) -> list[dict]:
-              """
-                      List available instruments (public endpoint).
-
-                              Returns raw dicts – convert to :class:`~grvt_sdk.types.Instrument`
-                                      as needed.
-                                              """
+        """List available instruments (public endpoint). Returns raw dicts."""
         body: dict = {"is_active": [True]}
-        if kind is not None:
-                      body["kind"] = [int(kind)]
-                  if base is not None:
-                                body["base"] = [base]
-                            if quote is not None:
-                                          body["quote"] = [quote]
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
 
         raw = self._request("POST", "/full/v1/instruments", json=body, public=True)
+        return raw.get("result", {}).get("instruments", [])
+
+
+# ---------------------------------------------------------------------------
+# Async client
+# ---------------------------------------------------------------------------
+
+class AsyncGRVTRestClient:
+    """
+    Async REST client for GRVT Exchange (aiohttp-based).
+
+    Shares the same GRVTAuth instance as the WebSocket client so a single
+    event loop can drive both without thread-bridging.
+
+    Usage
+    -----
+        async with AsyncGRVTRestClient(auth=auth) as client:
+            book = await client.get_orderbook("BTC_USDT_Perp")
+            resp = await client.create_order(order)
+    """
+
+    def __init__(self, auth: GRVTAuth, timeout: float = 10.0) -> None:
+        self._auth    = auth
+        self._timeout = timeout
+        self._session: Any = None   # aiohttp.ClientSession, created on first use
+
+    async def __aenter__(self) -> "AsyncGRVTRestClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    # ------------------------------------------------------------------
+    # Internal async request helper
+    # ------------------------------------------------------------------
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[dict] = None,
+        public: bool = False,
+    ) -> Any:
+        import aiohttp
+
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+
+        if public:
+            base    = self._auth.market_url
+            headers = {}
+        else:
+            base    = self._auth.base_url
+            cookie  = await self._auth.async_get_cookie()
+            headers = {"Cookie": f"exchange_token={cookie}"}
+
+        url     = base + path
+        backoff = _RETRY_BASE_S
+
+        for attempt in range(_MAX_RETRIES + 1):
+            logger.debug("%s %s  body=%s  attempt=%d", method.upper(), url, json, attempt)
+            async with self._session.request(
+                method, url,
+                json=json,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
+            ) as resp:
+                status = resp.status
+                if status not in _RETRY_STATUSES or attempt == _MAX_RETRIES:
+                    if status >= 400:
+                        body = await resp.text()
+                        raise GRVTAPIError(status, body, method=method, path=path)
+                    return await resp.json()
+
+            logger.warning(
+                "Retryable response %d from %s %s – retrying in %.1f s",
+                status, method.upper(), path, backoff,
+            )
+            await asyncio.sleep(backoff)
+            backoff *= _RETRY_EXP
+
+    # ------------------------------------------------------------------
+    # Order management
+    # ------------------------------------------------------------------
+
+    async def create_order(self, order: Order) -> CreateOrderResponse:
+        if not order.signature:
+            raise ValueError("order.signature must be set before submitting")
+        raw    = await self._request("POST", "/full/v1/order", json=_order_to_dict(order))
+        result = raw.get("result", raw)
+        return CreateOrderResponse(
+            order_id=result["order_id"],
+            status=OrderStatus(int(result.get("status", 2))),
+            reason=result.get("reason"),
+        )
+
+    async def cancel_order(self, sub_account_id: int, order_id: str) -> CancelOrderResponse:
+        body   = {"sub_account_id": str(sub_account_id), "order_id": order_id}
+        raw    = await self._request("POST", "/full/v1/cancel_order", json=body)
+        result = raw.get("result", raw)
+        return CancelOrderResponse(
+            order_id=result.get("order_id", order_id),
+            success=result.get("success", True),
+        )
+
+    async def cancel_all_orders(
+        self,
+        sub_account_id: int,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
+    ) -> CancelAllOrdersResponse:
+        body: dict = {"sub_account_id": str(sub_account_id)}
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
+        raw    = await self._request("POST", "/full/v1/cancel_all_orders", json=body)
+        result = raw.get("result", raw)
+        return CancelAllOrdersResponse(num_cancelled=int(result.get("num_cancelled", 0)))
+
+    async def get_open_orders(
+        self,
+        sub_account_id: int,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
+    ) -> list[Order]:
+        body: dict = {"sub_account_id": str(sub_account_id)}
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
+        raw        = await self._request("POST", "/full/v1/open_orders", json=body)
+        orders_raw = raw.get("result", {}).get("open_orders", [])
+        return [_parse_order(o) for o in orders_raw]
+
+    async def get_account_summary(self, sub_account_id: int) -> AccountSummary:
+        body   = {"sub_account_id": str(sub_account_id)}
+        raw    = await self._request("POST", "/full/v1/account_summary", json=body)
+        result = raw.get("result", raw)
+        return _parse_account_summary(sub_account_id, result)
+
+    # ------------------------------------------------------------------
+    # Market data (public)
+    # ------------------------------------------------------------------
+
+    async def get_orderbook(self, instrument: str, depth: int = 10) -> Orderbook:
+        raw = await self._request("POST", "/full/v1/book", json={"instrument": instrument, "depth": depth}, public=True)
+        return _parse_orderbook(instrument, raw.get("result", raw))
+
+    async def get_recent_trades(self, instrument: str, limit: int = 100) -> list[Trade]:
+        raw        = await self._request("POST", "/full/v1/trades", json={"instrument": instrument, "limit": limit}, public=True)
+        trades_raw = raw.get("result", {}).get("trades", [])
+        return [
+            Trade(
+                trade_id=t["trade_id"],
+                instrument=instrument,
+                price=t["price"],
+                size=t["size"],
+                side=Side(int(t["is_taker_buyer"])),
+                timestamp=int(t["created_time"]),
+            )
+            for t in trades_raw
+        ]
+
+    async def get_instruments(
+        self,
+        kind:  Optional[KindEnum] = None,
+        base:  Optional[str]      = None,
+        quote: Optional[str]      = None,
+    ) -> list[dict]:
+        body: dict = {"is_active": [True]}
+        if kind  is not None: body["kind"]  = [int(kind)]
+        if base  is not None: body["base"]  = [base]
+        if quote is not None: body["quote"] = [quote]
+        raw = await self._request("POST", "/full/v1/instruments", json=body, public=True)
         return raw.get("result", {}).get("instruments", [])

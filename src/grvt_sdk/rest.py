@@ -40,14 +40,9 @@ from .types import (
     CreateOrderResponse,
     KindEnum,
     Order,
-    OrderLeg,
-    OrderMetadata,
     OrderStatus,
     Orderbook,
-    OrderbookLevel,
-    Position,
     Side,
-    TimeInForce,
     Trade,
 )
 
@@ -107,70 +102,31 @@ def _order_to_dict(order: Order) -> dict:
 
 
 def _parse_order(raw: dict) -> Order:
-    """Deserialise a raw API dict into an Order."""
-    legs = [
-        OrderLeg(
-            instrument_hash=leg["instrument"],
-            size=leg["size"],
-            limit_price=leg["limit_price"],
-            is_buying_asset=leg["is_buying_asset"],
-        )
+    """Deserialise a raw API dict into an Order via Pydantic validation."""
+    # API uses "instrument" key for legs; our model uses "instrument_hash"
+    normalised = dict(raw)
+    normalised["legs"] = [
+        {**leg, "instrument_hash": leg.pop("instrument", leg.get("instrument_hash", ""))}
         for leg in raw.get("legs", [])
     ]
-    meta_raw = raw.get("metadata", {})
-    metadata = OrderMetadata(
-        client_order_id=int(meta_raw.get("client_order_id", 0)),
-        create_time=int(meta_raw.get("create_time", 0)),
-    )
-    return Order(
-        sub_account_id=int(raw["sub_account_id"]),
-        time_in_force=TimeInForce(int(raw["time_in_force"])),
-        expiration=int(raw["expiration"]),
-        legs=legs,
-        metadata=metadata,
-        signature=raw.get("signature"),
-        order_id=raw.get("order_id"),
-    )
+    return Order.model_validate(normalised)
 
 
 def _parse_orderbook(instrument: str, result: dict) -> Orderbook:
-    def _levels(raw_levels: list) -> list[OrderbookLevel]:
-        return [
-            OrderbookLevel(
-                price=lv["price"],
-                size=lv["size"],
-                num_orders=int(lv.get("num_orders", 0)),
-            )
-            for lv in raw_levels
-        ]
-    return Orderbook(
-        instrument=instrument,
-        bids=_levels(result.get("bids", [])),
-        asks=_levels(result.get("asks", [])),
-        sequence_number=int(result.get("sequence_number", 0)),
-    )
+    return Orderbook.model_validate({"instrument": instrument, **result})
 
 
 def _parse_account_summary(sub_account_id: int, result: dict) -> AccountSummary:
-    positions = [
-        Position(
-            instrument=p["instrument"],
-            size=p["size"],
-            avg_entry_price=p["avg_entry_price"],
-            unrealised_pnl=p.get("unrealised_pnl", "0"),
-            realised_pnl=p.get("realised_pnl", "0"),
-            margin=p.get("margin", "0"),
-        )
-        for p in result.get("positions", [])
-    ]
-    return AccountSummary(
-        sub_account_id=sub_account_id,
-        total_equity=result.get("total_equity", "0"),
-        available_margin=result.get("available_margin", "0"),
-        initial_margin=result.get("initial_margin", "0"),
-        maintenance_margin=result.get("maintenance_margin", "0"),
-        positions=positions,
-    )
+    # Fill defaults for optional fields the API may omit
+    normalised = {
+        "sub_account_id":     sub_account_id,
+        "total_equity":       result.get("total_equity", "0"),
+        "available_margin":   result.get("available_margin", "0"),
+        "initial_margin":     result.get("initial_margin", "0"),
+        "maintenance_margin": result.get("maintenance_margin", "0"),
+        "positions":          result.get("positions", []),
+    }
+    return AccountSummary.model_validate(normalised)
 
 
 # ---------------------------------------------------------------------------

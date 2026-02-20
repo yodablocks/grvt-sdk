@@ -278,9 +278,12 @@ class GRVTRestClient:
     ) -> CancelAllOrdersResponse:
         """Cancel all open orders for a sub-account (optionally filtered)."""
         body: dict = {"sub_account_id": str(sub_account_id)}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
 
         raw    = self._request("POST", "/full/v1/cancel_all_orders", json=body)
         result = raw.get("result", raw)
@@ -295,9 +298,12 @@ class GRVTRestClient:
     ) -> list[Order]:
         """Return all open orders for a sub-account."""
         body: dict = {"sub_account_id": str(sub_account_id)}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
 
         raw        = self._request("POST", "/full/v1/open_orders", json=body)
         orders_raw = raw.get("result", {}).get("open_orders", [])
@@ -356,9 +362,12 @@ class GRVTRestClient:
     ) -> list[dict]:
         """List available instruments (public endpoint). Returns raw dicts."""
         body: dict = {"is_active": [True]}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
 
         raw = self._request("POST", "/full/v1/instruments", json=body, public=True)
         return raw.get("result", {}).get("instruments", [])
@@ -480,9 +489,12 @@ class AsyncGRVTRestClient:
         quote: Optional[str]      = None,
     ) -> CancelAllOrdersResponse:
         body: dict = {"sub_account_id": str(sub_account_id)}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
         raw    = await self._request("POST", "/full/v1/cancel_all_orders", json=body)
         result = raw.get("result", raw)
         return CancelAllOrdersResponse(num_cancelled=int(result.get("num_cancelled", 0)))
@@ -495,9 +507,12 @@ class AsyncGRVTRestClient:
         quote: Optional[str]      = None,
     ) -> list[Order]:
         body: dict = {"sub_account_id": str(sub_account_id)}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
         raw        = await self._request("POST", "/full/v1/open_orders", json=body)
         orders_raw = raw.get("result", {}).get("open_orders", [])
         return [_parse_order(o) for o in orders_raw]
@@ -538,8 +553,11 @@ class AsyncGRVTRestClient:
         quote: Optional[str]      = None,
     ) -> list[dict]:
         body: dict = {"is_active": [True]}
-        if kind  is not None: body["kind"]  = [int(kind)]
-        if base  is not None: body["base"]  = [base]
-        if quote is not None: body["quote"] = [quote]
+        if kind is not None:
+            body["kind"] = [int(kind)]
+        if base is not None:
+            body["base"] = [base]
+        if quote is not None:
+            body["quote"] = [quote]
         raw = await self._request("POST", "/full/v1/instruments", json=body, public=True)
         return raw.get("result", {}).get("instruments", [])

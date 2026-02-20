@@ -37,7 +37,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional, Type
 
 import websockets

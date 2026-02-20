@@ -44,7 +44,7 @@ from typing import Callable, Optional
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
-from .types import GRVTEnv, Order, OrderLeg
+from .types import Order, OrderLeg
 
 # ---------------------------------------------------------------------------
 # Type alias

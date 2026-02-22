@@ -38,6 +38,7 @@ from .types import (
     CancelAllOrdersResponse,
     CancelOrderResponse,
     CreateOrderResponse,
+    Instrument,
     KindEnum,
     Order,
     OrderStatus,
@@ -315,8 +316,8 @@ class GRVTRestClient:
         kind:  Optional[KindEnum] = None,
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
-    ) -> list[dict[str, Any]]:
-        """List available instruments (public endpoint). Returns raw dicts."""
+    ) -> list[Instrument]:
+        """List available instruments (public endpoint)."""
         body: dict[str, Any] = {"is_active": [True]}
         if kind is not None:
             body["kind"] = [int(kind)]
@@ -327,7 +328,7 @@ class GRVTRestClient:
 
         raw: dict[str, Any] = self._request("POST", "/full/v1/instruments", json=body, public=True)
         result: dict[str, Any] = raw.get("result", {})
-        return list(result.get("instruments", []))
+        return [Instrument.model_validate(i) for i in result.get("instruments", [])]
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +509,8 @@ class AsyncGRVTRestClient:
         kind:  Optional[KindEnum] = None,
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Instrument]:
+        """List available instruments (public endpoint)."""
         body: dict[str, Any] = {"is_active": [True]}
         if kind is not None:
             body["kind"] = [int(kind)]
@@ -518,4 +520,4 @@ class AsyncGRVTRestClient:
             body["quote"] = [quote]
         raw: dict[str, Any] = await self._request("POST", "/full/v1/instruments", json=body, public=True)
         result: dict[str, Any] = raw.get("result", {})
-        return list(result.get("instruments", []))
+        return [Instrument.model_validate(i) for i in result.get("instruments", [])]

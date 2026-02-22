@@ -209,6 +209,12 @@ The official [`grvt-pysdk`](https://github.com/gravity-technologies/grvt-pysdk) 
 reference implementation. This SDK was built by studying it closely and addressing the gaps
 that matter most in a production trading context.
 
+GRVT's [`builder-examples`](https://github.com/gravity-technologies/builder-examples) covers
+the basic integration pattern — API key auth and single-leg order submission. The examples
+here (`market_maker.py`, `latency.py`) pick up where that leaves off: two-sided quoting with
+position limits, SeqNonce for high-frequency submissions, graceful reconnect, and latency
+measurement — the production concerns that surface once the basic integration is working.
+
 | | grvt-pysdk | this SDK |
 |---|---|---|
 | **Cookie name** | Hardcoded `"gravity"` — breaks when server sends `exchange_token` ([issue #97](https://github.com/gravity-technologies/grvt-pysdk/issues/97)) | Reads whichever cookie name the server returns |

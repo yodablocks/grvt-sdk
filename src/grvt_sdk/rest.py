@@ -78,7 +78,7 @@ class GRVTAPIError(Exception):
 # Serialisation helpers (shared by sync and async clients)
 # ---------------------------------------------------------------------------
 
-def _order_to_dict(order: Order) -> dict:
+def _order_to_dict(order: Order) -> dict[str, Any]:
     """Serialise an Order to the JSON body expected by GRVT."""
     return {
         "sub_account_id": str(order.sub_account_id),
@@ -101,7 +101,7 @@ def _order_to_dict(order: Order) -> dict:
     }
 
 
-def _parse_order(raw: dict) -> Order:
+def _parse_order(raw: dict[str, Any]) -> Order:
     """Deserialise a raw API dict into an Order via Pydantic validation."""
     # API uses "instrument" key for legs; our model uses "instrument_hash"
     normalised = dict(raw)
@@ -112,11 +112,11 @@ def _parse_order(raw: dict) -> Order:
     return Order.model_validate(normalised)
 
 
-def _parse_orderbook(instrument: str, result: dict) -> Orderbook:
+def _parse_orderbook(instrument: str, result: dict[str, Any]) -> Orderbook:
     return Orderbook.model_validate({"instrument": instrument, **result})
 
 
-def _parse_account_summary(sub_account_id: int, result: dict) -> AccountSummary:
+def _parse_account_summary(sub_account_id: int, result: dict[str, Any]) -> AccountSummary:
     # Fill defaults for optional fields the API may omit
     normalised = {
         "sub_account_id":     sub_account_id,
@@ -156,7 +156,7 @@ class GRVTRestClient:
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
+        json: Optional[dict[str, Any]] = None,
         public: bool = False,
     ) -> Any:
         """
@@ -233,7 +233,7 @@ class GRVTRestClient:
         quote: Optional[str]      = None,
     ) -> CancelAllOrdersResponse:
         """Cancel all open orders for a sub-account (optionally filtered)."""
-        body: dict = {"sub_account_id": str(sub_account_id)}
+        body: dict[str, Any] = {"sub_account_id": str(sub_account_id)}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
@@ -253,7 +253,7 @@ class GRVTRestClient:
         quote: Optional[str]      = None,
     ) -> list[Order]:
         """Return all open orders for a sub-account."""
-        body: dict = {"sub_account_id": str(sub_account_id)}
+        body: dict[str, Any] = {"sub_account_id": str(sub_account_id)}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
@@ -315,9 +315,9 @@ class GRVTRestClient:
         kind:  Optional[KindEnum] = None,
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """List available instruments (public endpoint). Returns raw dicts."""
-        body: dict = {"is_active": [True]}
+        body: dict[str, Any] = {"is_active": [True]}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
@@ -325,8 +325,9 @@ class GRVTRestClient:
         if quote is not None:
             body["quote"] = [quote]
 
-        raw = self._request("POST", "/full/v1/instruments", json=body, public=True)
-        return raw.get("result", {}).get("instruments", [])
+        raw: dict[str, Any] = self._request("POST", "/full/v1/instruments", json=body, public=True)
+        result: dict[str, Any] = raw.get("result", {})
+        return list(result.get("instruments", []))
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +373,7 @@ class AsyncGRVTRestClient:
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
+        json: Optional[dict[str, Any]] = None,
         public: bool = False,
     ) -> Any:
         import aiohttp
@@ -444,7 +445,7 @@ class AsyncGRVTRestClient:
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
     ) -> CancelAllOrdersResponse:
-        body: dict = {"sub_account_id": str(sub_account_id)}
+        body: dict[str, Any] = {"sub_account_id": str(sub_account_id)}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
@@ -462,7 +463,7 @@ class AsyncGRVTRestClient:
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
     ) -> list[Order]:
-        body: dict = {"sub_account_id": str(sub_account_id)}
+        body: dict[str, Any] = {"sub_account_id": str(sub_account_id)}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
@@ -507,13 +508,14 @@ class AsyncGRVTRestClient:
         kind:  Optional[KindEnum] = None,
         base:  Optional[str]      = None,
         quote: Optional[str]      = None,
-    ) -> list[dict]:
-        body: dict = {"is_active": [True]}
+    ) -> list[dict[str, Any]]:
+        body: dict[str, Any] = {"is_active": [True]}
         if kind is not None:
             body["kind"] = [int(kind)]
         if base is not None:
             body["base"] = [base]
         if quote is not None:
             body["quote"] = [quote]
-        raw = await self._request("POST", "/full/v1/instruments", json=body, public=True)
-        return raw.get("result", {}).get("instruments", [])
+        raw: dict[str, Any] = await self._request("POST", "/full/v1/instruments", json=body, public=True)
+        result: dict[str, Any] = raw.get("result", {})
+        return list(result.get("instruments", []))

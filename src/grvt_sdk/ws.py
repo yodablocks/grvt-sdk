@@ -38,7 +38,7 @@ import json
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Optional, Type
+from typing import Any, Optional
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Raw handler: receives the full decoded JSON dict
-RawHandler = Callable[[dict], Coroutine[Any, Any, None]]
+RawHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 # Typed handler: receives a deserialized dataclass instance
 TypedHandler = Callable[[Any], Coroutine[Any, Any, None]]
@@ -80,13 +80,13 @@ _RECONNECT_EXP   = 2.0
 @dataclass
 class _Subscription:
     channel:    str
-    params:     dict
-    handler:    TypedHandler        # always receives a typed or raw value
-    msg_type:   Optional[Type]      # if set, data["data"] is deserialized to this type
-    raw:        bool = False        # if True, handler receives the full raw dict
+    params:     dict[str, Any]
+    handler:    TypedHandler                    # always receives a typed or raw value
+    msg_type:   Optional[type[Any]]             # if set, data["data"] is deserialized to this type
+    raw:        bool = False                    # if True, handler receives the full raw dict
 
 
-def _deserialize(msg: dict, msg_type: Optional[Type]) -> Any:
+def _deserialize(msg: dict[str, Any], msg_type: Optional[type[Any]]) -> Any:
     """
     Attempt to deserialize msg["data"] into msg_type.
 
@@ -164,8 +164,8 @@ class GRVTWebSocketClient:
         self,
         channel:  str,
         handler:  TypedHandler,
-        params:   Optional[dict] = None,
-        msg_type: Optional[Type] = None,
+        params:   Optional[dict[str, Any]] = None,
+        msg_type: Optional[type[Any]] = None,
     ) -> None:
         """
         Subscribe to a GRVT WebSocket channel.
@@ -203,7 +203,7 @@ class GRVTWebSocketClient:
             msg = json.dumps({"op": "unsubscribe", "channel": channel})
             await self._ws.send(msg)
 
-    async def send_raw(self, payload: dict) -> None:
+    async def send_raw(self, payload: dict[str, Any]) -> None:
         """
         Enqueue a raw JSON message to be sent to the server.
 
@@ -282,7 +282,7 @@ class GRVTWebSocketClient:
         """Receive messages, check sequence gaps, and dispatch to handlers."""
         async for raw in ws:
             try:
-                msg: dict = json.loads(raw)
+                msg: dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
                 logger.warning("Received non-JSON WebSocket message: %r", raw)
                 continue
@@ -311,7 +311,7 @@ class GRVTWebSocketClient:
         if self._ws and not self._ws.closed:
             await self._ws.send(msg)
 
-    async def _check_sequence(self, channel: str, msg: dict) -> None:
+    async def _check_sequence(self, channel: str, msg: dict[str, Any]) -> None:
         """
         Detect sequence number gaps.
 
@@ -339,7 +339,7 @@ class GRVTWebSocketClient:
 
         self._seq[channel] = seq
 
-    async def _dispatch(self, channel: str, msg: dict) -> None:
+    async def _dispatch(self, channel: str, msg: dict[str, Any]) -> None:
         """Find and call the handler(s) for the given channel."""
         for sub in self._subscriptions:
             # Allow prefix matching: "trades" matches "trades.BTC_USDT_Perp"

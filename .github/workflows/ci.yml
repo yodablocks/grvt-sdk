@@ -31,9 +31,8 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src/ tests/
 
-      - name: Type-check (mypy)
-        run: mypy src/grvt_sdk/
-        continue-on-error: true  # informational until strict typing is complete
+      - name: Type-check (mypy --strict)
+        run: mypy src/grvt_sdk/ --strict
 
       - name: Test (pytest)
         run: pytest tests/ -v --tb=short

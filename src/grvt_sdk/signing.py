@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from eth_account import Account
 from eth_account.messages import encode_typed_data
@@ -59,7 +59,7 @@ NonceProvider = Callable[[], int]
 # ---------------------------------------------------------------------------
 
 # Primary types mirror GRVT's on-chain Order struct.
-_EIP712_TYPES: dict = {
+_EIP712_TYPES: dict[str, Any] = {
     "EIP712Domain": [
         {"name": "name",              "type": "string"},
         {"name": "version",           "type": "string"},
@@ -105,7 +105,7 @@ def build_eip712_domain(
     verifying_contract: str,
     name: str = "GRVT Exchange",
     version: str = "1",
-) -> dict:
+) -> dict[str, Any]:
     """
     Construct the EIP-712 domain separator dict.
 
@@ -128,7 +128,7 @@ def build_eip712_domain(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _encode_leg(leg: OrderLeg) -> dict:
+def _encode_leg(leg: OrderLeg) -> dict[str, Any]:
     """Convert an OrderLeg into the dict expected by EIP-712 encoding."""
     size_int  = int(Decimal(leg.size)        * _SIZE_SCALE)
     price_int = int(Decimal(leg.limit_price) * _PRICE_SCALE)
@@ -141,7 +141,7 @@ def _encode_leg(leg: OrderLeg) -> dict:
     }
 
 
-def _build_order_message(order: Order, nonce: int) -> dict:
+def _build_order_message(order: Order, nonce: int) -> dict[str, Any]:
     """
     Build the EIP-712 message dict from an Order.
 
@@ -211,7 +211,7 @@ def sign_order(
 
     signable = encode_typed_data(
         domain_data=domain,
-        message_types={k: v for k, v in _EIP712_TYPES.items() if k != "EIP712Domain"},  # type: ignore[arg-type]
+        message_types={k: v for k, v in _EIP712_TYPES.items() if k != "EIP712Domain"},
         message_data=message,
     )
 
@@ -252,11 +252,12 @@ def recover_signer(
 
     signable = encode_typed_data(
         domain_data=domain,
-        message_types={k: v for k, v in _EIP712_TYPES.items() if k != "EIP712Domain"},  # type: ignore[arg-type]
+        message_types={k: v for k, v in _EIP712_TYPES.items() if k != "EIP712Domain"},
         message_data=message,
     )
 
-    return Account.recover_message(
+    address: str = Account.recover_message(
         signable,
         signature=bytes.fromhex(order.signature.removeprefix("0x")),
     )
+    return address

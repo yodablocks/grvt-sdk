@@ -74,7 +74,9 @@ src/grvt_sdk/
 └── types.py     # Pydantic v2 models for the full API schema
 
 examples/
-└── quickstart.py   # end-to-end: auth → sign → submit → subscribe
+├── quickstart.py     # end-to-end: auth → sign → submit → subscribe
+├── market_maker.py   # two-sided quoting, SeqNonce, position limits, graceful shutdown
+└── latency.py        # REST RTT + fill-to-confirm latency benchmark
 
 tests/
 ├── test_signing.py  # 15 EIP-712 unit tests (offline)
@@ -107,6 +109,68 @@ order = Order(
 
 sign_order(order, private_key="0x...", chain_id=GRVTEnv.TESTNET.chain_id)
 # order.signature is now set — ready to submit
+```
+
+---
+
+## Examples
+
+### Market maker (`examples/market_maker.py`)
+
+A runnable two-sided quoting loop that demonstrates the full integration surface:
+subscribes to the orderbook WS stream, places a bid and ask around mid with a
+configurable spread, re-quotes on fills, enforces position limits with `reduce_only`,
+and cancels all open orders on Ctrl-C.
+
+```bash
+export GRVT_API_KEY="your_api_key"
+export GRVT_PRIVATE_KEY="0x..."
+export GRVT_SUB_ACCOUNT_ID="12345"
+python examples/market_maker.py
+```
+
+### Latency benchmark (`examples/latency.py`)
+
+Measures the two latency dimensions that matter most to market makers:
+
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **REST round-trip** | `create_order()` call → HTTP response |
+| **Fill-to-confirm** | Order submit → fill event arrives on private WS stream |
+
+Reports P50 / P95 / P99 / max / mean in milliseconds across N samples.
+High REST RTT points to network or exchange processing latency; high fill-to-confirm
+points to the WS pipeline.
+
+```bash
+export GRVT_API_KEY="your_api_key"
+export GRVT_PRIVATE_KEY="0x..."
+export GRVT_SUB_ACCOUNT_ID="12345"
+export GRVT_INSTRUMENT_HASH="0x..."   # keccak256 of instrument name
+
+# REST round-trip benchmark (20 samples, far-from-market price — orders won't fill)
+python examples/latency.py
+
+# Also run fill-to-confirm benchmark (set an at-market price)
+export GRVT_LIMIT_PRICE="95000.0"
+export GRVT_N_SAMPLES="50"
+python examples/latency.py
+```
+
+Example output:
+
+```
+GRVT Latency Benchmark
+  env=testnet  instrument=BTC_USDT_Perp  samples=20
+
+Running REST round-trip benchmark…
+
+  REST round-trip (submit → HTTP response) (20 samples)
+    P50  :     42.3 ms
+    P95  :     61.8 ms
+    P99  :     68.2 ms
+    max  :     68.2 ms
+    mean :     44.1 ms
 ```
 
 ---

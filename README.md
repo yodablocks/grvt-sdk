@@ -217,9 +217,11 @@ that matter most in a production trading context.
 | **EIP-712 encoding** | Uses `float` arithmetic for price/size | `Decimal` throughout — `int(float("1.013") * 1e9) == 1012999999`, not `1013000000` |
 | **Nonce strategy** | Timestamp-based only | Pluggable `NonceProvider` — sequence counter for high-frequency quoting |
 | **WebSocket gaps** | No sequence tracking | Per-channel sequence number gap detection with `on_gap` callback |
-| **Type safety** | Plain dataclasses, no validation | Pydantic v2 — field-level validation at construction, not at submission |
+| **Type safety** | Plain dataclasses, no validation | Pydantic v2 — field-level validation at construction, not at submission. All REST methods return typed models, none return raw `dict` |
+| **Static analysis** | No mypy configuration | `mypy --strict` — zero errors across all 7 source files, blocking in CI on Python 3.10/3.11/3.12 |
 | **Unified entry point** | Separate auth / REST / WS objects to wire manually | `GRVTClient` façade — one object, shared auth, async context manager |
-| **Test coverage** | No offline tests | 83 offline unit tests across signing, types, WS dispatch, and façade |
+| **Test coverage** | No offline tests | 83 offline unit tests + 5 integration smoke tests (`--integration` flag, skipped in CI) |
+| **Developer docs** | No contributor guide | `CONTRIBUTING.md` — prerequisites, test commands, step-by-step guide for adding endpoints |
 
 ---
 

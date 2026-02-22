@@ -139,6 +139,26 @@ python examples/quickstart.py
 
 ---
 
+## Comparison with grvt-pysdk
+
+The official [`grvt-pysdk`](https://github.com/gravity-technologies/grvt-pysdk) is a solid
+reference implementation. This SDK was built by studying it closely and addressing the gaps
+that matter most in a production trading context.
+
+| | grvt-pysdk | this SDK |
+|---|---|---|
+| **Cookie name** | Hardcoded `"gravity"` — breaks when server sends `exchange_token` ([issue #97](https://github.com/gravity-technologies/grvt-pysdk/issues/97)) | Reads whichever cookie name the server returns |
+| **Async re-auth race** | No lock — concurrent coroutines can trigger duplicate login requests | `asyncio.Lock` with double-checked locking |
+| **Proactive refresh** | Refreshes only after expiry | Refreshes 5 min before expiry — long-running bots never hit auth failures |
+| **EIP-712 encoding** | Uses `float` arithmetic for price/size | `Decimal` throughout — `int(float("1.013") * 1e9) == 1012999999`, not `1013000000` |
+| **Nonce strategy** | Timestamp-based only | Pluggable `NonceProvider` — sequence counter for high-frequency quoting |
+| **WebSocket gaps** | No sequence tracking | Per-channel sequence number gap detection with `on_gap` callback |
+| **Type safety** | Plain dataclasses, no validation | Pydantic v2 — field-level validation at construction, not at submission |
+| **Unified entry point** | Separate auth / REST / WS objects to wire manually | `GRVTClient` façade — one object, shared auth, async context manager |
+| **Test coverage** | No offline tests | 83 offline unit tests across signing, types, WS dispatch, and façade |
+
+---
+
 ## License
 
 MIT
